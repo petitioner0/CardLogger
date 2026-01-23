@@ -8,8 +8,8 @@ import com.evacipated.cardcrawl.modthespire.lib.SpireInitializer;
 import com.megacrit.cardcrawl.cards.AbstractCard;
 import com.megacrit.cardcrawl.core.Settings;
 import com.megacrit.cardcrawl.dungeons.AbstractDungeon;
-import com.megacrit.cardcrawl.monsters.AbstractMonster;
 import com.megacrit.cardcrawl.rooms.AbstractRoom;
+import com.megacrit.cardcrawl.screens.select.HandCardSelectScreen;
 
 import java.awt.Desktop;
 import java.io.*;
@@ -18,7 +18,6 @@ import java.util.*;
 
 @SpireInitializer
 public class CardLoggerMod implements
-        OnCardUseSubscriber,
         PostBattleSubscriber,
         OnStartBattleSubscriber,
         PostInitializeSubscriber,
@@ -26,9 +25,13 @@ public class CardLoggerMod implements
 
     private static final int DEFAULT_KEY = Input.Keys.F8;
     private static final String LOG_DIR = "mods/CardLogger/logs/";
+    private static final SimpleDateFormat formatter =
+            new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
-    private String fileName = null;
-    private static final SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+    /** 当前战斗日志文件 */
+    private static String fileName = null;
+
+    /** 回合结束检测 */
     private boolean lastTurnEnded = false;
 
     public CardLoggerMod() {
@@ -39,6 +42,39 @@ public class CardLoggerMod implements
         new CardLoggerMod();
     }
 
+    /* ======================= 日志接口 ======================= */
+
+    public static void logDrawCard(AbstractCard card) {
+        if (fileName == null) return;
+        writeLine("抽牌：" + card.name);
+    }
+
+    public static void logCardUse(AbstractCard card, String m) {
+        if (fileName == null) return;
+        writeLine("出牌：" + card.name + "（" + m + "）");
+    }
+
+    public static void logChoose(AbstractCard card) {
+        if (fileName == null) return;
+        writeLine("选择：" + card.name);
+    }
+
+    public static void logChoose(List<AbstractCard> cards) {
+        if (fileName == null || cards == null || cards.isEmpty()) return;
+
+        StringBuilder sb = new StringBuilder("选择：");
+        for (int i = 0; i < cards.size(); i++) {
+            sb.append(cards.get(i).name);
+            if (i < cards.size() - 1) {
+                sb.append(",");
+            }
+        }
+
+        writeLine(sb.toString());
+    }
+
+    /* ======================= BaseMod 回调 ======================= */
+
     @Override
     public void receivePostInitialize() {
         File dir = new File(LOG_DIR);
@@ -47,51 +83,20 @@ public class CardLoggerMod implements
 
     @Override
     public void receiveOnBattleStart(AbstractRoom room) {
+        lastTurnEnded = false;
+
         String seed = Settings.seed.toString();
         int floor = AbstractDungeon.floorNum;
 
-        // 创建以种子为名的文件夹
         String seedDir = LOG_DIR + seed + "/";
         File dir = new File(seedDir);
-        if (!dir.exists()) {
-            dir.mkdirs();
-        }
+        if (!dir.exists()) dir.mkdirs();
 
-        // 设置日志文件路径
         fileName = seedDir + floor + ".txt";
 
-        // 每次都写入新的 SL 记录（不再做文件内容判断）
         int slNum = countExistingSLs(fileName) + 1;
         String time = formatter.format(new Date());
         writeLine("\n第" + slNum + "次SL（" + time + "）：");
-    }
-
-    @Override
-    public void receiveCardUsed(AbstractCard card) {
-        if (fileName == null) return;
-
-        String target = null;
-
-        if (card.target == AbstractCard.CardTarget.ALL_ENEMY) {
-            target = "全体";
-        } else if (card.target == AbstractCard.CardTarget.SELF) {
-            target = "玩家";
-        } else {
-            // 猜测目标：是否有怪物被 hover（仅在单体攻击有效）
-            for (AbstractMonster m : AbstractDungeon.getMonsters().monsters) {
-                if (!m.isDeadOrEscaped() && m.hb.hovered) {
-                    target = m.name;
-                    break;
-                }
-            }
-        }
-
-        // 默认目标处理
-        if (target == null || target.trim().isEmpty()) {
-            target = "未知目标";
-        }
-
-        writeLine("出牌：" + card.name + "（" + target + "）");
     }
 
     @Override
@@ -101,15 +106,13 @@ public class CardLoggerMod implements
         String endDesc = "【战斗结束】";
         if (AbstractDungeon.player.isDead) {
             endDesc = "【玩家死亡】";
-        } else if (AbstractDungeon.getCurrRoom().monsters != null &&
-                AbstractDungeon.getCurrRoom().monsters.areMonstersBasicallyDead()) {
+        } else if (room.monsters != null && room.monsters.areMonstersBasicallyDead()) {
             endDesc = "【胜利】";
-        } else if (AbstractDungeon.getCurrRoom().smoked) {
+        } else if (room.smoked) {
             endDesc = "【逃跑】";
         }
 
         writeLine(endDesc);
-
         fileName = null;
     }
 
@@ -126,7 +129,6 @@ public class CardLoggerMod implements
             }
         }
 
-        // 检测回合结束
         if (fileName != null) {
             boolean currentTurnEnded = AbstractDungeon.actionManager.turnHasEnded;
             if (!lastTurnEnded && currentTurnEnded) {
@@ -136,28 +138,19 @@ public class CardLoggerMod implements
         }
     }
 
-    private void writeLine(String text) {
-        try (PrintWriter writer = new PrintWriter(new FileOutputStream(fileName, true), true)) {
+    /* ======================= 工具方法 ======================= */
+
+    private static void writeLine(String text) {
+        if (fileName == null) return;
+        try (PrintWriter writer =
+                     new PrintWriter(new FileOutputStream(fileName, true), true)) {
             writer.println(text);
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    private boolean checkSLWritten(String filePath) {
-        try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.startsWith("第") && line.contains("次SL")) {
-                    return true;
-                }
-            }
-        } catch (IOException ignored) {
-        }
-        return false;
-    }
-
-    private int countExistingSLs(String filePath) {
+    private static int countExistingSLs(String filePath) {
         File file = new File(filePath);
         if (!file.exists()) return 0;
 
@@ -173,5 +166,4 @@ public class CardLoggerMod implements
         }
         return count;
     }
-
 }
